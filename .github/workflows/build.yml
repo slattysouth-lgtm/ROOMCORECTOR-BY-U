@@ -16,7 +16,7 @@ jobs:
       - name: Configurer (CMake) + capture log
         shell: pwsh
         run: |
-          cmake -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release 2>&1 | Tee-Object -FilePath configure-log.txt
+          cmake -B build -A x64 -DCMAKE_BUILD_TYPE=Release 2>&1 | Tee-Object -FilePath configure-log.txt
           if ($LASTEXITCODE -ne 0) { Write-Host "=== CMAKE CONFIGURE A ECHOUE ===" ; exit 1 }
 
       - name: Compiler en Release + capture log
