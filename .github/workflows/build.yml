@@ -25,6 +25,36 @@ jobs:
           cmake --build build --config Release 2>&1 | Tee-Object -FilePath compile-log.txt
           if ($LASTEXITCODE -ne 0) { Write-Host "=== COMPILATION A ECHOUE ===" ; exit 1 }
 
+      - name: Construire l'installateur VST3 (Inno Setup)
+        if: success()
+        shell: pwsh
+        run: |
+          $iss = @(
+            '[Setup]',
+            'AppName=Room Corrector',
+            'AppVersion=1.0.0',
+            'AppPublisher=Uncertain',
+            'DefaultDirName={commoncf64}\VST3',
+            'DisableDirPage=yes',
+            'DisableProgramGroupPage=yes',
+            'OutputBaseFilename=RoomCorrector-Setup',
+            'ArchitecturesAllowed=x64compatible',
+            'ArchitecturesInstallIn64BitMode=x64compatible',
+            'Compression=lzma2',
+            'SolidCompression=yes',
+            'PrivilegesRequired=admin',
+            'WizardStyle=modern',
+            '',
+            '[Files]',
+            'Source: "build\RoomCorrector_artefacts\Release\VST3\Room Corrector.vst3\*"; DestDir: "{commoncf64}\VST3\Room Corrector.vst3"; Flags: recursesubdirs createallsubdirs ignoreversion'
+          )
+          Set-Content -Path installer.iss -Value $iss -Encoding UTF8
+          Write-Host "--- contenu installer.iss ---"
+          Get-Content installer.iss
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss 2>&1 | Tee-Object -FilePath installer-log.txt
+          if ($LASTEXITCODE -ne 0) { Write-Host "=== INSTALLATEUR A ECHOUE ===" ; exit 1 }
+
       - name: Publier les logs (TOUJOURS, meme si echec)
         if: always()
         uses: actions/upload-artifact@v4
@@ -33,6 +63,7 @@ jobs:
           path: |
             configure-log.txt
             compile-log.txt
+            installer-log.txt
           if-no-files-found: warn
 
       - name: Publier le VST3 + le Standalone (.exe)
@@ -41,4 +72,12 @@ jobs:
         with:
           name: RoomCorrector-Windows
           path: build/RoomCorrector_artefacts/Release/
+          if-no-files-found: warn
+
+      - name: Publier l'installateur (Setup.exe)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RoomCorrector-Installer
+          path: Output/RoomCorrector-Setup.exe
           if-no-files-found: warn
