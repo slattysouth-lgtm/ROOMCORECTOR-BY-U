@@ -51,6 +51,7 @@ private:
     juce::AudioBuffer<float> dryBuf;
 
     juce::SmoothedValue<float> cleanSm, repairSm, toneSm, compSm, sibSm, mixSm, outSm;
+    float tpGain=1.0f; // etat du plafond de securite true-peak
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RoomCorrectorAudioProcessor)
 };

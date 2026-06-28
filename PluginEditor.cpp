@@ -133,7 +133,7 @@ RoomCorrectorAudioProcessorEditor::RoomCorrectorAudioProcessorEditor (RoomCorrec
 
     initKnob(cleanK,  cleanL,  "CLEAN",     &cleanD,  "Gate · Bruit · Reverb · Clics");
     initKnob(repairK, repairL, "REPAIR",    &repairD, "Proximity · Micro trop proche");
-    initKnob(toneK,   toneL,   "TONE",      &toneD,   "U67 adaptatif · Corps · Air");
+    initKnob(toneK,   toneL,   "TONE",      &toneD,   "Air adaptatif · Corps");
     initKnob(compK,   compL,   "COMP",      &compD,   "Compresseur · Limiteur");
     initKnob(sibK,    sibL,    "SIBILANCE", &sibD,    "De-esser adaptatif");
     initKnob(mixK,    mixL,    "MIX",       nullptr,  {});
@@ -193,7 +193,7 @@ void RoomCorrectorAudioProcessorEditor::paint (juce::Graphics& g)
     // Chaine bas de fenetre
     g.setFont(juce::Font(8.5f));
     g.setColour(Col::sub.withAlpha(0.5f));
-    g.drawText("GATE · DENOISE · DEREVERB · DE-CLICK · PROXIMITY · U67[F0] · CORPS · AIR · COMP · DE-ESS",
+    g.drawText("GATE · DENOISE · DEREVERB · DE-CLICK · PROXIMITY · TONE[F0] · CORPS · AIR · COMP · DE-ESS",
                0,getHeight()-18,getWidth(),16,juce::Justification::centred);
 }
 

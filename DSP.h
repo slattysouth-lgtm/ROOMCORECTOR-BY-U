@@ -420,10 +420,10 @@ private:
             float gProx=1.0f;
             if (doProx && k<lo200)
             {
-                // proxSmooth > 0.38 = trop de bass → on attenue progressivement
+                // proxSmooth > 0.38 = trop de bass → on attenue DOUCEMENT
                 const float excess2=proxSmooth/0.38f;
-                gProx=1.0f/(1.0f+repairAmt*(excess2-1.0f)*0.75f);
-                gProx=juce::jmax(0.316f,gProx); // max -10 dB
+                gProx=1.0f/(1.0f+repairAmt*(excess2-1.0f)*0.45f);
+                gProx=juce::jmax(0.45f,gProx); // max -7 dB (doux, ne detruit pas)
             }
 
             // 6) COURBE U67 ADAPTATIVE (3 profils blendees selon F0)
@@ -520,31 +520,40 @@ public:
     {
         if (amount<=0.0001f) return x;
 
-        // Saturation large-bande (chaleur tubey)
-        const float drive=1.0f+amount*4.5f;
-        const float sat  =std::tanh(x*drive)*(1.0f/std::tanh(drive));
-        const float warm =x+(sat-x)*amount*0.50f;
-
-        // Detection matite (manque d'aigus → on en cree)
-        const float hp8 =hp8k.process(x);
-        const float hp3 =hp3k.process(x);
-        const float hfe =hfEnv.process(hp8);
-        const float ffe =fEnv.process(x)+1.0e-6f;
-        const float dull=1.0f-rc_clamp01((hfe/ffe)*3.0f);
-
-        // CORPS : saturation douce du bas-medium, adaptive au manque de grave
+        // ── Detection par bandes ─────────────────────────────────────────
         const float low =lp320.process(x);
-        const float le  =lEnv.process(low)+1.0e-6f;
-        const float thin=1.0f-rc_clamp01((le/ffe)*1.5f);
-        const float body=(std::tanh(low*(1.5f+amount*2.5f))-low)
-                        *amount*(0.18f+0.45f*thin);
+        const float hp3 =hp3k.process(x);
+        const float hp8 =hp8k.process(x);
 
-        // AIR : presence 3kHz + harmoniques aigus adaptatifs
-        const float presence=hp3*amount*0.28f;
-        const float airExc  =std::tanh(hp8*(3.0f+amount*7.0f))
-                            *amount*(0.14f+0.50f*dull);
+        const float ffe =fEnv .process(x)  +1.0e-6f; // energie large bande
+        const float hfe =hfEnv.process(hp8)+1.0e-9f; // energie aigus
+        const float le  =lEnv .process(low)+1.0e-6f; // energie grave
 
-        return warm+body+presence+airExc;
+        // manque d'aigus (dull) / manque de grave (thin), 0..1
+        const float dull=1.0f-rc_clamp01((hfe/ffe)*3.0f);
+        const float thin=1.0f-rc_clamp01((le /ffe)*1.5f);
+
+        // GARDE ANTI-SIBILANCE : si les aigus sont DEJA forts → on bride l'air.
+        // (1 = peu d'aigus, on peut booster ; 0 = deja sifflant, on ne touche pas)
+        const float sibGuard=1.0f-rc_clamp01((hfe/ffe)*6.0f);
+
+        // ── CORPS : comble le grave manquant, doux, jamais boueux ─────────
+        const float body=(std::tanh(low*(1.2f+amount*1.8f))-low)
+                        *amount*(0.15f+0.40f*thin);
+
+        // ── AIR : boost lineaire PROPRE (pas de tanh => pas de fizz),
+        //    dose par le manque d'aigus, et bride par la garde anti-sibilance ─
+        const float presence=hp3*amount*0.22f*(0.5f+0.5f*dull);
+        const float air     =hp8*amount*(0.30f+0.80f*dull)*sibGuard;
+
+        // ── FILL : saturation TRES legere, uniquement si le signal est pauvre
+        //    (record faible) et a tres bas niveau → comble les vides sans colorer ─
+        const float lack     =rc_clamp01((dull+thin)*0.5f);
+        const float fillDrive=1.0f+amount*lack*1.5f;
+        const float filled   =std::tanh(x*fillDrive)/fillDrive;
+        const float fill     =(filled-x)*amount*lack*0.25f;
+
+        return x+body+presence+air+fill;
     }
 
 private:
@@ -564,15 +573,16 @@ public:
         sr=sampleRate;
         for (auto& b:sibHP) b.setHP(sr,6200.0,0.707);
         sibEnv.setTimes(sr,1.0f,55.0f);
-        compEnv.setTimes(sr,8.0f,120.0f);
+        fastEnv.setTimes(sr,1.0f,60.0f);    // detecteur rapide : capte plosives/pics
+        slowEnv.setTimes(sr,35.0f,320.0f);  // detecteur lent : suit le corps de la voix
         lvlTrack.setTimes(sr,250.0f,700.0f);
         reset();
     }
     void reset()
     {
         for (auto& b:sibHP) b.reset();
-        sibEnv.reset();compEnv.reset();lvlTrack.reset();
-        compGain=1.0f;limGain=1.0f;
+        sibEnv.reset();fastEnv.reset();slowEnv.reset();lvlTrack.reset();
+        compGain=1.0f;limGain=1.0f;makeupSm=1.0f;holdCtr=0;
         compSm=0.0f;sibSm=0.0f;
     }
 
@@ -606,31 +616,53 @@ public:
                 { const float x=buf.getSample(c,s); buf.setSample(c,s,(x-hp[c])+hp[c]*deessGR); }
             }
 
-            // ── Compresseur + auto-gain (COMP) ───────────────────────────
+            // ── Compresseur ANTI-POMPAGE (COMP) ──────────────────────────
+            //  - knee doux, ratio doux
+            //  - 2 detecteurs : lent (corps) + rapide (transitoires/plosives)
+            //  - HOLD + release long program-dependent => zero pompage
+            //  - makeup lisse tres lentement => pas de respiration de volume
+            //  - aucune coloration ajoutee (signal propre)
             if (compSm>0.0005f)
             {
                 float m2=0.0f;
                 for (int c=0;c<chs;++c) m2=juce::jmax(m2,std::fabs(buf.getSample(c,s)));
-                const float ce=compEnv.process(m2)+1.0e-9f;
-                const float thr=juce::jmax(0.03f,0.08f-0.05f*compSm); // seuil baisse avec compSm
-                const float rat=1.0f+compSm*5.0f;  // jusqu'à 6:1
-                float gr=1.0f;
-                if (ce>thr)
-                {
-                    const float oDb=20.0f*std::log10(ce/thr);
-                    gr=std::pow(10.0f,-(oDb*(1.0f-1.0f/rat))/20.0f);
-                }
-                const float autoG=std::pow(juce::jlimit(0.25f,8.0f,0.18f/lvl),compSm);
-                compGain+=0.12f*(gr*autoG-compGain);
 
-                // Saturation subtile quand comp fort = "gros son commercial"
+                const float fast=fastEnv.process(m2)+1.0e-9f;
+                const float slow=slowEnv.process(m2)+1.0e-9f;
+                const float det =juce::jmax(slow,fast*0.85f); // corps, mais attrape les pics
+
+                const float thr  =juce::jmax(0.04f,0.10f-0.05f*compSm);
+                const float ratio=1.0f+compSm*3.0f;   // jusqu'a ~4:1, doux
+                const float knee =6.0f;               // dB, knee doux
+
+                // gain computer soft-knee (en dB)
+                const float xDb  =20.0f*std::log10(det);
+                const float thrDb=20.0f*std::log10(thr);
+                const float over =xDb-thrDb;
+                float grDb=0.0f;
+                if (2.0f*over>knee)        grDb=(1.0f/ratio-1.0f)*over;
+                else if (2.0f*over>-knee)  { const float z=over+knee*0.5f;
+                                             grDb=(1.0f/ratio-1.0f)*(z*z)/(2.0f*knee); }
+                const float target=std::pow(10.0f,grDb/20.0f); // <=1
+
+                // lissage anti-pompage : attaque rapide, HOLD, puis release long
+                const float atkA=std::exp(-1.0f/(float)(sr*0.005f));        // 5 ms
+                const float relMs=160.0f+260.0f*compSm;                     // 160→420 ms
+                const float relA=std::exp(-1.0f/(float)(sr*relMs*0.001f));
+                if (target<compGain)            // le gain descend (attaque)
+                { compGain=atkA*(compGain-target)+target; holdCtr=(int)(sr*0.025f); }
+                else if (holdCtr>0)             // maintien : on ne relache pas encore
+                    --holdCtr;
+                else                            // release lent => pas de pompage
+                    compGain=relA*(compGain-target)+target;
+
+                // makeup auto, doux et TRES lisse (jamais de respiration)
+                const float makeup=std::pow(juce::jlimit(0.5f,4.0f,0.20f/slow),0.6f*compSm);
+                makeupSm+=0.0006f*(makeup-makeupSm);
+
+                const float gtot=compGain*makeupSm;
                 for (int c=0;c<chs;++c)
-                {
-                    float v=buf.getSample(c,s)*compGain;
-                    if (compSm>0.5f)
-                        v=std::tanh(v*(1.0f+(compSm-0.5f)*0.8f))/(1.0f+(compSm-0.5f)*0.3f);
-                    buf.setSample(c,s,v);
-                }
+                    buf.setSample(c,s,buf.getSample(c,s)*gtot);
             }
 
             // ── Limiteur de securite (COMP > 0) ──────────────────────────
@@ -649,8 +681,9 @@ public:
 private:
     double sr=44100.0;
     Biquad sibHP[2];
-    EnvFollower sibEnv,compEnv,lvlTrack;
-    float compGain=1.0f,limGain=1.0f,compSm=0.0f,sibSm=0.0f;
+    EnvFollower sibEnv,fastEnv,slowEnv,lvlTrack;
+    float compGain=1.0f,limGain=1.0f,makeupSm=1.0f,compSm=0.0f,sibSm=0.0f;
+    int   holdCtr=0;
 };
 
 //==============================================================================

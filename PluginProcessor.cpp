@@ -145,7 +145,8 @@ void RoomCorrectorAudioProcessor::processBlock (juce::AudioBuffer<float>& buf,
         mixReady.process(buf,cA,sA);
     }
 
-    // ── 4. Blend dry/wet + gain de sortie ─────────────────────────────────
+    // ── 4. Blend dry/wet + gain de sortie + securite true-peak ────────────
+    const float tpCeil=0.89f; // ~ -1 dBFS
     for (int s=0;s<n;++s)
     {
         const float mw=mixSm.getNextValue();
@@ -154,7 +155,15 @@ void RoomCorrectorAudioProcessor::processBlock (juce::AudioBuffer<float>& buf,
         {
             const float wet=buf.getSample(c,s);
             const float dry=dryBuf.getSample(c,s);
-            buf.setSample(c,s,(dry*(1.0f-mw)+wet*mw)*g);
+            float out=(dry*(1.0f-mw)+wet*mw)*g;
+
+            // Plafond de securite TOUJOURS actif : rien ne depasse -1 dBFS
+            const float a=std::fabs(out);
+            if (a>tpCeil) { const float gg=tpCeil/a; if (gg<tpGain) tpGain=gg; }
+            tpGain+=(1.0f-tpGain)*0.0009f;
+            out=juce::jlimit(-tpCeil,tpCeil,out*tpGain);
+
+            buf.setSample(c,s,out);
         }
     }
 }
