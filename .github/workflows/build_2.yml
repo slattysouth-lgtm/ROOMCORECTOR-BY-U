@@ -1,0 +1,93 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-win:
+    runs-on: windows-latest
+
+    steps:
+      - name: Recuperer le projet
+        uses: actions/checkout@v4
+
+      - name: Configurer (CMake) + capture log
+        shell: pwsh
+        run: |
+          cmake -B build -A x64 -DCMAKE_BUILD_TYPE=Release 2>&1 | Tee-Object -FilePath configure-log.txt
+          if ($LASTEXITCODE -ne 0) { Write-Host "=== CMAKE CONFIGURE A ECHOUE ===" ; exit 1 }
+
+      - name: Compiler en Release + capture log
+        shell: pwsh
+        run: |
+          cmake --build build --config Release 2>&1 | Tee-Object -FilePath compile-log.txt
+          if ($LASTEXITCODE -ne 0) { Write-Host "=== COMPILATION A ECHOUE ===" ; exit 1 }
+
+      - name: Construire l'installateur (Inno Setup)
+        if: success()
+        shell: pwsh
+        run: |
+          $iss = @(
+            '[Setup]',
+            'AppName=Room Corrector',
+            'AppVersion=1.0.0',
+            'AppPublisher=Uncertain',
+            'AppPublisherURL=https://uncertain.fr',
+            'DefaultDirName={commonpf64}\Uncertain\Room Corrector',
+            'DisableProgramGroupPage=yes',
+            'OutputBaseFilename=RoomCorrector-Setup',
+            'ArchitecturesAllowed=x64compatible',
+            'ArchitecturesInstallIn64BitMode=x64compatible',
+            'Compression=lzma2',
+            'SolidCompression=yes',
+            'PrivilegesRequired=admin',
+            'WizardStyle=modern',
+            'UninstallDisplayName=Room Corrector by Uncertain',
+            '',
+            '[Tasks]',
+            'Name: "desktopicon"; Description: "Creer un raccourci sur le Bureau"; GroupDescription: "Raccourcis:"; Flags: unchecked',
+            '',
+            '[Files]',
+            '; VST3 -> dossier standard reconnu par FL Studio, Mixcraft, Ableton, Reaper, Studio One, Cubase, Bitwig...',
+            'Source: "build\RoomCorrector_artefacts\Release\VST3\Room Corrector.vst3\*"; DestDir: "{commoncf64}\VST3\Room Corrector.vst3"; Flags: recursesubdirs createallsubdirs ignoreversion',
+            '; Standalone (bonus : utilisable sans DAW)',
+            'Source: "build\RoomCorrector_artefacts\Release\Standalone\Room Corrector.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist',
+            '',
+            '[Icons]',
+            'Name: "{autoprograms}\Room Corrector"; Filename: "{app}\Room Corrector.exe"',
+            'Name: "{autodesktop}\Room Corrector"; Filename: "{app}\Room Corrector.exe"; Tasks: desktopicon'
+          )
+          Set-Content -Path installer.iss -Value $iss -Encoding UTF8
+          Write-Host "--- installer.iss ---"; Get-Content installer.iss
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss 2>&1 | Tee-Object -FilePath installer-log.txt
+          if ($LASTEXITCODE -ne 0) { Write-Host "=== INSTALLATEUR A ECHOUE ===" ; exit 1 }
+
+      - name: Publier les logs (TOUJOURS, meme si echec)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BUILD-LOGS
+          path: |
+            configure-log.txt
+            compile-log.txt
+            installer-log.txt
+          if-no-files-found: warn
+
+      - name: Publier le VST3 + le Standalone (.exe)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RoomCorrector-Windows
+          path: build/RoomCorrector_artefacts/Release/
+          if-no-files-found: warn
+
+      - name: Publier l'installateur (Setup.exe)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RoomCorrector-Installer
+          path: Output/RoomCorrector-Setup.exe
+          if-no-files-found: warn
